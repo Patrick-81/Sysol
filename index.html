@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Système Solaire 3D (v8 - Luminosité Accrue)</title>
+    <style>
+        /* ... Styles identiques ... */
+        body { margin: 0; overflow: hidden; background-color: #000; color: white; font-family: sans-serif; }
+        canvas { display: block; }
+        #info { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 100; display: block; padding: 5px; background-color: rgba(0,0,0,0.4); font-size: 0.9em;}
+        #controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 100; background-color: rgba(0, 0, 0, 0.5); padding: 10px; border-radius: 5px; display: flex; align-items: center; }
+        #controls label { margin-right: 10px; font-size: 0.9em;}
+        #controls input[type="range"] { width: 180px; }
+        #controls span { min-width: 40px; text-align: right; margin-left: 10px; font-size: 0.9em;}
+        #tooltip { position: absolute; display: none; background-color: rgba(0, 0, 0, 0.75); color: white; padding: 5px 10px; border-radius: 3px; font-size: 12px; pointer-events: none; white-space: nowrap; z-index: 101; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 1.5em; background-color: rgba(0,0,0,0.7); padding: 15px; border-radius: 5px; display: none; z-index: 200;}
+    </style>
+</head>
+<body>
+    <div id="loading">Chargement des textures...</div>
+    <div id="tooltip"></div>
+    <div id="info">
+        Système Solaire 3D | Survolez les astres pour voir leur nom<br>
+        Souris : Orbiter / Zoomer / Translater
+    </div>
+    <div id="controls">
+        <label for="timeSpeed">Vitesse :</label>
+        <input type="range" id="timeSpeed" name="timeSpeed" min="0" max="50" value="1" step="0.1">
+        <span id="timeSpeedValue">1.0x</span>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Variables Globales ---
+        let scene, camera, renderer, controls;
+        let sun, planets = [], allMoons = [];
+        let asteroidBelt;
+        let timeFactor = 1;
+
+        const raycaster = new THREE.Raycaster();
+        const mouseNDC = new THREE.Vector2();
+        let currentlyHovered = null;
+        let tooltipElement, loadingElement;
+
+        // --- Gestionnaire de Chargement ---
+        const manager = new THREE.LoadingManager();
+        const textureLoader = new THREE.TextureLoader(manager);
+        manager.onStart = function ( url, itemsLoaded, itemsTotal ) { loadingElement.style.display = 'block'; loadingElement.textContent = `Chargement: 0 / ${itemsTotal}`; };
+        manager.onLoad = function ( ) { loadingElement.style.display = 'none'; };
+        manager.onProgress = function ( url, itemsLoaded, itemsTotal ) { loadingElement.textContent = `Chargement: ${itemsLoaded} / ${itemsTotal}`;};
+        manager.onError = function ( url ) { console.error( 'Erreur chargement: ' + url ); loadingElement.textContent = `Erreur: ${url}`; loadingElement.style.color = 'red'; };
+
+        // --- Données des Astres ---
+        const planetData = [
+             // ... (Données identiques à v7, avec roughness etc.) ...
+             { name: 'Mercure', size: 0.38, texture: 'mercury_map.jpg', fallbackColor: 0xaaaaaa, distance: 8, speed: 0.010, roughness: 0.8 },
+            { name: 'Vénus', size: 0.95, texture: 'venus_map.jpg', fallbackColor: 0xd4c98f, distance: 12, speed: 0.008, roughness: 0.8 },
+            { name: 'Terre', size: 1.0, texture: 'earth_map.jpg', fallbackColor: 0x4f86f7, distance: 17, speed: 0.006, roughness: 0.7, moons: [
+                { name: 'Lune', size: 0.27, texture: 'moon_map.jpg', fallbackColor: 0xcccccc, distance: 1.8, speed: 0.05, roughness: 0.8 }
+            ]},
+            { name: 'Mars', size: 0.53, texture: 'mars_map.jpg', fallbackColor: 0xcf5934, distance: 25, speed: 0.005, roughness: 0.8, moons: [
+                { name: 'Phobos', size: 0.1, texture: 'phobos_map.jpg', fallbackColor: 0x999999, distance: 0.9, speed: 0.08, roughness: 0.9 },
+                { name: 'Deimos', size: 0.08, texture: 'deimos_map.jpg', fallbackColor: 0xaaaaaa, distance: 1.4, speed: 0.06, roughness: 0.9 }
+            ]},
+            { name: 'Jupiter', size: 4.0, texture: 'jupiter_map.jpg', fallbackColor: 0xc7a886, distance: 55, speed: 0.003, roughness: 0.9, moons: [
+                { name: 'Io', size: 0.36, texture: 'io_map.jpg', fallbackColor: 0xf5e48f, distance: 5.5, speed: 0.04, roughness: 0.7 },
+                { name: 'Europe', size: 0.31, texture: 'europa_map.jpg', fallbackColor: 0xead8c0, distance: 7, speed: 0.03, roughness: 0.6 },
+                { name: 'Ganymède', size: 0.52, texture: 'ganymede_map.jpg', fallbackColor: 0x9f8f7f, distance: 9, speed: 0.02, roughness: 0.7 },
+                { name: 'Callisto', size: 0.48, texture: 'callisto_map.jpg', fallbackColor: 0x6b5b4b, distance: 12, speed: 0.015, roughness: 0.8 }
+            ]},
+            { name: 'Saturne', size: 3.5, texture: 'saturn_map.jpg', fallbackColor: 0xd9cf9f, distance: 85, speed: 0.002, roughness: 0.9, ringTexture: 'saturn_ring.png', ringFallbackColor: 0x8c7b6a, moons: [
+                { name: 'Titan', size: 0.5, texture: 'titan_map.jpg', fallbackColor: 0xe0b870, distance: 7, speed: 0.02, roughness: 0.8 },
+                { name: 'Rhéa', size: 0.2, texture: 'rhea_map.jpg', fallbackColor: 0xb0a898, distance: 9, speed: 0.015, roughness: 0.7 },
+            ]},
+            { name: 'Uranus', size: 2.0, texture: 'uranus_map.jpg', fallbackColor: 0xafeeee, distance: 115, speed: 0.0015, roughness: 0.8 },
+            { name: 'Neptune', size: 1.9, texture: 'neptune_map.jpg', fallbackColor: 0x3f54d6, distance: 145, speed: 0.001, roughness: 0.8, moons: [
+                 { name: 'Triton', size: 0.25, texture: 'triton_map.jpg', fallbackColor: 0xf0e0d0, distance: 4.5, speed: 0.025, roughness: 0.7 }
+            ]}
+        ];
+        const beltInnerRadius = 28; const beltOuterRadius = 45; const beltThickness = 2; const beltSpeed = 0.004;
+
+        // --- Fonction d'Initialisation ---
+        function init() {
+            tooltipElement = document.getElementById('tooltip'); loadingElement = document.getElementById('loading');
+            scene = new THREE.Scene(); scene.background = new THREE.Color(0x050510);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 70, 110); camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // --- Améliorations Rendu Couleur/Luminosité ---
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            // --- AUGMENTATION DE L'EXPOSITION ---
+            renderer.toneMappingExposure = 1.6; // Valeur augmentée (était 1.0) - Ajustez si besoin (ex: 1.3, 1.8)
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; controls.minDistance = 5; controls.maxDistance = 500; controls.target.set(0, 0, 0);
+
+            // Lumières (légèrement augmentées aussi)
+            const ambientLight = new THREE.AmbientLight(0x777777); // Ambient un peu plus fort (était 0x606060)
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 3.5, 0, 1.5); // Intensité 3.5 (était 3.0)
+            scene.add(pointLight);
+
+            // --- Création des Astres (Logique de création identique à v7) ---
+
+            // Soleil
+            const sunGeometry = new THREE.SphereGeometry(4, 64, 64);
+            const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xfcba03 });
+            textureLoader.load('textures/sun_map.jpg', (texture) => { sunMaterial.map = texture; sunMaterial.needsUpdate = true; }, undefined, (error) => { console.error('Erreur chargement texture Soleil:', error); });
+            sun = new THREE.Mesh(sunGeometry, sunMaterial);
+            sun.userData.name = 'Soleil'; scene.add(sun);
+
+            // Planètes, Lunes, Anneaux, Orbites
+            planetData.forEach(data => {
+                // Planète
+                const planetGeometry = new THREE.SphereGeometry(data.size, 32, 32);
+                const planetMaterial = new THREE.MeshStandardMaterial({ color: data.fallbackColor, roughness: data.roughness || 0.8, metalness: 0.1 });
+                textureLoader.load(`textures/${data.texture}`, (texture) => { planetMaterial.map = texture; planetMaterial.needsUpdate = true; }, undefined, (error) => { console.error(`Erreur chargement texture ${data.name}:`, error); });
+                const planetMesh = new THREE.Mesh(planetGeometry, planetMaterial);
+                planetMesh.userData.name = data.name;
+                const orbitPivot = new THREE.Object3D(); scene.add(orbitPivot);
+                planetMesh.position.set(data.distance, 0, 0); orbitPivot.add(planetMesh);
+// Création Anneaux (MeshBasicMaterial)
+                 if (data.ringTexture) {
+                    const ringGeometry = new THREE.RingGeometry(data.size * 1.3, data.size * 2.2, 64);
+                    const ringMaterial = new THREE.MeshBasicMaterial({
+                        color: data.ringFallbackColor || 0x888888,
+                        side: THREE.DoubleSide,
+                        transparent: true, // Important pour l'alpha
+                        opacity: 1.0 // Opacité complète, l'alpha gérera les trous
+                    });
+
+                    // Charger texture et configurer la répétition dans onLoad
+/*
+                     textureLoader.load(
+                        `textures/${data.ringTexture}`, // Chemin vers votre bande PNG
+                        (texture) => { // === Début du onLoad Callback ===
+                            // Appliquer la texture au matériau
+                            ringMaterial.map = texture;
+
+                            // --- AJOUTS POUR LA RÉPÉTITION ---
+                            // 1. Dire à la texture de se répéter sur l'axe S (circonférence)
+                            //texture.wrapS = THREE.RepeatWrapping;
+                            // 2. Garder le mode standard sur l'axe T (radial)
+                            //texture.wrapT = THREE.ClampToEdgeWrapping; // Ou THREE.RepeatWrapping si votre bande doit aussi se répéter radialement
+
+                            // 3. Définir combien de fois répéter la texture autour de l'anneau
+                            //    Essayez différentes valeurs ici (ex: 4, 8, 16) pour voir le résultat !
+                            //texture.repeat.set(8, 1); // Répète 8 fois sur la circonférence, 1 fois radialement
+
+                            // --- FIN DES AJOUTS ---
+
+                            // Découpage alpha (important pour les PNG transparents)
+                            ringMaterial.alphaTest = 0.15; // Ajustez si besoin (0.1 à 0.5)
+
+                            // Indiquer que le matériau doit être mis à jour
+                            ringMaterial.needsUpdate = true;
+                        }, // === Fin du onLoad Callback ===
+                        undefined, // onProgress (facultatif)
+                        (error) => { // onError
+                           console.error(`Erreur chargement texture Anneau ${data.name}:`, error);
+                        }
+                    );
+*/
+// DANS la boucle forEach pour Saturne, DANS le textureLoader.load pour l'anneau :
+
+textureLoader.load(
+    `textures/${data.ringTexture}`, // Chemin vers votre PNG concentrique
+    (texture) => { // === Début du onLoad Callback ===
+
+        // Appliquer la texture au matériau
+        ringMaterial.map = texture;
+
+        // --- PAS DE RÉPÉTITION NÉCESSAIRE pour une texture concentrique ---
+        // Assurez-vous que les lignes suivantes sont commentées ou supprimées :
+        // texture.wrapS = THREE.RepeatWrapping; // <- COMMENTÉ ou ABSENT
+        // texture.wrapT = THREE.ClampToEdgeWrapping; // <- COMMENTÉ ou ABSENT
+        // texture.repeat.set(8, 1); // <- COMMENTÉ ou ABSENT
+
+        // Améliorer le filtrage anisotrope (toujours une bonne idée)
+        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+        // Découpage alpha (important pour la transparence du PNG)
+        ringMaterial.alphaTest = 0.15; // Ajustez si les bords sont pixelisés (0.1 à 0.5)
+
+        // Indiquer que le matériau doit être mis à jour
+        ringMaterial.needsUpdate = true;
+
+    }, // === Fin du onLoad Callback ===
+    undefined, // onProgress (facultatif)
+    (error) => { // onError
+       console.error(`Erreur chargement texture Anneau ${data.name}:`, error);
+    }
+); // Fin de textureLoader.load
+                    const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ringMesh.rotation.x = Math.PI / 2;
+                    planetMesh.add(ringMesh); // Anneau enfant de la planète
+                    ringMesh.raycast = () => {};
+                }
+/*
+                 // Anneaux
+                 if (data.ringTexture) {
+                    const ringGeometry = new THREE.RingGeometry(data.size * 1.3, data.size * 2.2, 64);
+                    const ringMaterial = new THREE.MeshBasicMaterial({ color: data.ringFallbackColor || 0x888888, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+                    textureLoader.load( `textures/${data.ringTexture}`, (texture) => { ringMaterial.map = texture; ringMaterial.opacity = 1.0; ringMaterial.alphaTest = 0.15; ringMaterial.needsUpdate = true; }, undefined, (error) => { console.error(`Erreur chargement texture Anneau ${data.name}:`, error); } );
+                    const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ringMesh.rotation.x = Math.PI / 2; planetMesh.add(ringMesh);
+                    ringMesh.raycast = () => {};
+                }
+*/
+                // Orbite visuelle Planète
+                const planetOrbitGeometry = new THREE.RingGeometry(data.distance - 0.05, data.distance + 0.05, 128);
+                const planetOrbitMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, opacity: 0.1, transparent: true });
+                const planetOrbitMesh = new THREE.Mesh(planetOrbitGeometry, planetOrbitMaterial);
+                planetOrbitMesh.rotation.x = Math.PI / 2; scene.add(planetOrbitMesh);
+                planetOrbitMesh.raycast = () => {};
+
+                // Lunes
+                const planetMoons = [];
+                if (data.moons) {
+                    data.moons.forEach(moonData => {
+                        const moonGeometry = new THREE.SphereGeometry(moonData.size, 16, 16);
+                        const moonMaterial = new THREE.MeshStandardMaterial({ color: moonData.fallbackColor, roughness: moonData.roughness || 0.8, metalness: 0.1 });
+                         textureLoader.load( `textures/${moonData.texture}`, (texture) => { moonMaterial.map = texture; moonMaterial.needsUpdate = true; }, undefined, (error) => { console.error(`Erreur chargement texture ${moonData.name}:`, error); } );
+                        const moonMesh = new THREE.Mesh(moonGeometry, moonMaterial);
+                        moonMesh.userData.name = moonData.name;
+                        const moonPivot = new THREE.Object3D(); planetMesh.add(moonPivot);
+                        moonMesh.position.set(moonData.distance, 0, 0); moonPivot.add(moonMesh);
+                        planetMoons.push({ mesh: moonMesh, pivot: moonPivot, speed: moonData.speed });
+                        allMoons.push(moonMesh);
+                    });
+                }
+                planets.push({ mesh: planetMesh, pivot: orbitPivot, speed: data.speed, name: data.name, moons: planetMoons });
+            });
+
+            // Ceinture d'Astéroïdes
+            createAsteroidBelt();
+
+            // --- Écouteurs d'Événements ---
+            window.addEventListener('resize', onWindowResize, false);
+            renderer.domElement.addEventListener('mousemove', onDocumentMouseMove, false);
+            // Slider vitesse
+            const timeSpeedSlider = document.getElementById('timeSpeed');
+            const timeSpeedValueSpan = document.getElementById('timeSpeedValue');
+            timeSpeedSlider.addEventListener('input', (event) => { timeFactor = parseFloat(event.target.value); timeSpeedValueSpan.textContent = `${timeFactor.toFixed(1)}x`; });
+        }
+
+        // --- Autres Fonctions (createAsteroidBelt, onWindowResize, onDocumentMouseMove, animate) ---
+        // ... Identiques ...
+         function createAsteroidBelt() {
+            const asteroidCount = 8000; const positions = []; const geometry = new THREE.BufferGeometry();
+            for (let i = 0; i < asteroidCount; i++) { const angle = Math.random() * Math.PI * 2; const radius = THREE.MathUtils.randFloat(beltInnerRadius, beltOuterRadius); const x = Math.cos(angle) * radius; const y = THREE.MathUtils.randFloat(-beltThickness / 2, beltThickness / 2); const z = Math.sin(angle) * radius; positions.push(x, y, z); }
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); const material = new THREE.PointsMaterial({ color: 0xaaaaaa, size: 0.07, sizeAttenuation: true });
+            asteroidBelt = new THREE.Points(geometry, material); asteroidBelt.raycast = () => {}; scene.add(asteroidBelt);
+         }
+        function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+        function onDocumentMouseMove(event) {
+            const rect = renderer.domElement.getBoundingClientRect(); mouseNDC.x = ((event.clientX - rect.left) / rect.width) * 2 - 1; mouseNDC.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            raycaster.setFromCamera(mouseNDC, camera); const objectsToCheck = [sun, ...planets.map(p => p.mesh), ...allMoons]; const intersects = raycaster.intersectObjects(objectsToCheck, false);
+            if (intersects.length > 0) { const intersectedObject = intersects[0].object; if (currentlyHovered !== intersectedObject) { currentlyHovered = intersectedObject; tooltipElement.textContent = intersectedObject.userData.name || 'Objet inconnu'; tooltipElement.style.display = 'block'; } tooltipElement.style.left = (event.clientX + 15) + 'px'; tooltipElement.style.top = (event.clientY - 15) + 'px';
+            } else { if (currentlyHovered !== null) { currentlyHovered = null; tooltipElement.style.display = 'none'; } }
+         }
+        function animate() {
+            requestAnimationFrame(animate); const effectiveTimeFactor = timeFactor * 0.1;
+            sun.rotation.y += 0.0005 * effectiveTimeFactor;
+            planets.forEach(planet => { planet.pivot.rotation.y += planet.speed * effectiveTimeFactor; planet.mesh.rotation.y += 0.05 * effectiveTimeFactor; planet.moons.forEach(moon => { moon.pivot.rotation.y += moon.speed * effectiveTimeFactor; }); });
+            if (asteroidBelt) { asteroidBelt.rotation.y += beltSpeed * effectiveTimeFactor; }
+            controls.update(); renderer.render(scene, camera);
+        }
+
+        // --- Lancement ---
+        try { init(); animate(); }
+        catch (error) { console.error("Erreur critique:", error); loadingElement.textContent = "Erreur critique. Vérifiez la console (F12)."; loadingElement.style.color = 'red'; loadingElement.style.display = 'block'; }
+
+    </script>
+</body>
+</html>
